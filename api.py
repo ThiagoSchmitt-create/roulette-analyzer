@@ -16,11 +16,13 @@ Rodar producao:
   uvicorn api:app --host 0.0.0.0 --port 8000 --workers 2
 """
 from __future__ import annotations
+
+import os
 from collections import defaultdict
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from core.wheel import get_wheel
@@ -34,6 +36,16 @@ app = FastAPI(title="Roulette Analyzer", version="0.1.0")
 # Storage em memoria. Em producao, substituir por Supabase / Postgres.
 _history: dict[str, list[str]] = defaultdict(list)
 _timestamps: dict[str, list[str]] = defaultdict(list)
+
+# Token opcional de ingestao. Se INGEST_TOKEN estiver setado no ambiente, os
+# endpoints de ESCRITA (/spin, DELETE /history) exigem o header X-Ingest-Token.
+# Vazio = sem auth (dev local). Em API publica, SEMPRE setar (anti-feature #5).
+INGEST_TOKEN = os.environ.get("INGEST_TOKEN", "")
+
+
+def _require_ingest_token(token: Optional[str]) -> None:
+    if INGEST_TOKEN and token != INGEST_TOKEN:
+        raise HTTPException(401, "Token de ingestao invalido ou ausente (header X-Ingest-Token).")
 
 
 class SpinIn(BaseModel):
@@ -64,7 +76,8 @@ def health():
 
 
 @app.post("/spin")
-def add_spin(spin: SpinIn):
+def add_spin(spin: SpinIn, x_ingest_token: Optional[str] = Header(default=None)):
+    _require_ingest_token(x_ingest_token)
     wheel = get_wheel(spin.wheel_type)
     if spin.number not in wheel.position:
         raise HTTPException(400, f"Numero invalido para roda {spin.wheel_type}: {spin.number}")
@@ -111,7 +124,8 @@ def report(wheel_id: str, wheel_type: str = "european"):
 
 
 @app.delete("/history/{wheel_id}")
-def clear_history(wheel_id: str):
+def clear_history(wheel_id: str, x_ingest_token: Optional[str] = Header(default=None)):
+    _require_ingest_token(x_ingest_token)
     n = len(_history.pop(wheel_id, []))
     _timestamps.pop(wheel_id, None)
     return {"cleared": n}
