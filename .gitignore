@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build
+build/
+dist/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs / runtime
+*.log
+logs/
+*.pid
+
+# Output JSON da analise (gerados, nao commitar)
+out.json
+results/
+
+# Supabase local
+supabase/.branches
+supabase/.temp
+
+# Dados reais de giros (privacy — manter no Supabase, nao no git)
+data/
+*.csv
+!examples/*.csv
+
+# Claude Code (config local da maquina, nao commitar)
+.claude/

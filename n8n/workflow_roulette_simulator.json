@@ -1,0 +1,134 @@
+{
+  "name": "[TEST] Roulette Analyzer - Simulador de giros (/spin)",
+  "_comment": "LOCAL/TESTE. Gera giros sinteticos e POSTa no FastAPI /spin para exercitar o pipeline + o motor de previsibilidade. MODE: 'fair' (uniforme; motor -> sem_padrao), 'biased' (vies marginal -> vies_uniforme), 'markov' (dependencia serial -> dependencia_serial), 'periodic' (ciclo lag-5 -> periodicidade). DRIFT: rode em 'fair' e depois troque para 'biased' com o workflow ativo. NADA aqui preve o proximo numero. Ajuste a URL para sua FastAPI (tunnel se o n8n nao alcanca localhost). NAO importe em producao por engano.",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 1 }] }
+      },
+      "id": "cron-feed",
+      "name": "1. Cron: gera lote de giros",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === CONFIG (edite aqui) ===\nconst MODE = 'fair';        // fair | biased | markov | periodic\nconst WHEEL_TYPE = 'european';\nconst WHEEL_ID = 'sim-mesa-1';\nconst SPINS_PER_TICK = 200;\nconst BIAS_STRENGTH = 0.25;     // biased\nconst DEPENDENCE = 0.6;         // markov\nconst PERIOD = 5;               // periodic\nconst PERIOD_STRENGTH = 0.6;    // periodic\nconst HOT = [19, 4, 21, 2, 25]; // setor quente (biased)\n// drift = rode em 'fair' e depois troque para 'biased' com o workflow ativo\n// ===========================\nconst P = 37;\nconst out = [];\nconst buf = [];\nlet prev = Math.floor(Math.random() * P);\nfor (let k = 0; k < SPINS_PER_TICK; k++) {\n  let v;\n  if (MODE === 'biased' && Math.random() < BIAS_STRENGTH) {\n    v = HOT[Math.floor(Math.random() * HOT.length)];\n  } else if (MODE === 'markov' && k > 0 && Math.random() < DEPENDENCE) {\n    v = (7 * prev + 13) % P;\n  } else if (MODE === 'periodic' && k >= PERIOD && Math.random() < PERIOD_STRENGTH) {\n    v = buf[k - PERIOD];\n  } else {\n    v = Math.floor(Math.random() * P);\n  }\n  buf.push(v);\n  prev = v;\n  out.push({ json: { wheel_id: WHEEL_ID, wheel_type: WHEEL_TYPE, number: String(v), timestamp: new Date().toISOString() } });\n}\nreturn out;"
+      },
+      "id": "gen-spins",
+      "name": "2. Gera giros (fair/biased/markov/periodic)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/spin",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "wheel_id", "value": "={{$json.wheel_id}}" },
+            { "name": "wheel_type", "value": "={{$json.wheel_type}}" },
+            { "name": "number", "value": "={{$json.number}}" },
+            { "name": "timestamp", "value": "={{$json.timestamp}}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "post-spin",
+      "name": "3. POST /spin (um por giro)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 200],
+      "_comment": "Cada giro do lote vira um POST /spin. Troque a URL pela sua FastAPI publica se o n8n nao alcanca localhost."
+    },
+    {
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 2 }] }
+      },
+      "id": "cron-watch",
+      "name": "4. Cron: le veredito",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 460]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/report/sim-mesa-1",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [{ "name": "wheel_type", "value": "european" }]
+        },
+        "options": {}
+      },
+      "id": "get-report",
+      "name": "5. GET /report (veredito atual)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 460],
+      "_comment": "Le o veredito honesto. fair -> sem_vies; biased (3000+ giros) -> vies_provavel."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose", "version": 2 },
+          "conditions": [
+            { "id": "c1", "leftValue": "={{$json.verdict}}", "rightValue": "vies_provavel", "operator": { "type": "string", "operation": "equals" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-bias",
+      "name": "6. SE vies_provavel",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 460]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "alerta", "type": "string", "value": "=VIES detectado em {{$json.wheel_id}} | n={{$json.n_spins}} | {{$json.summary}}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-alert",
+      "name": "7a. Monta alerta (sem creds)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 380]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "b1", "name": "status", "type": "string", "value": "=sem alerta | veredito={{$json.verdict}} | n={{$json.n_spins}}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-noalert",
+      "name": "7b. Sem alerta",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 560]
+    }
+  ],
+  "connections": {
+    "1. Cron: gera lote de giros": { "main": [[{ "node": "2. Gera giros (fair/biased/markov/periodic)", "type": "main", "index": 0 }]] },
+    "2. Gera giros (fair/biased/markov/periodic)": { "main": [[{ "node": "3. POST /spin (um por giro)", "type": "main", "index": 0 }]] },
+    "4. Cron: le veredito": { "main": [[{ "node": "5. GET /report (veredito atual)", "type": "main", "index": 0 }]] },
+    "5. GET /report (veredito atual)": { "main": [[{ "node": "6. SE vies_provavel", "type": "main", "index": 0 }]] },
+    "6. SE vies_provavel": {
+      "main": [
+        [{ "node": "7a. Monta alerta (sem creds)", "type": "main", "index": 0 }],
+        [{ "node": "7b. Sem alerta", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}

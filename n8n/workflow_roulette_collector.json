@@ -1,0 +1,144 @@
+{
+  "name": "Roleta - Coletor + Analise (esqueleto)",
+  "_comment": "Workflow esqueleto para n8n. Conecte um source de giros (webhook do cassino online, scraper do live result, ou form manual) e um destino Supabase. Roda analise estatistica diariamente e alerta se chi-square cair abaixo de 0.001.",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "roulette/spin",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-spin",
+      "name": "1. Webhook: novo giro",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 200],
+      "_comment": "Recebe POST { wheel_id, number, timestamp }. Plugue seu coletor aqui."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Valida payload do giro\nconst wheel = $json.wheel_id;\nconst num = String($json.number);\nconst ts = $json.timestamp || new Date().toISOString();\nconst VALID_EU = new Set(['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','21','22','23','24','25','26','27','28','29','30','31','32','33','34','35','36']);\nconst VALID_US = new Set([...VALID_EU, '00']);\nconst valid = wheel === 'american' ? VALID_US : VALID_EU;\nif (!valid.has(num)) throw new Error(`Numero invalido: ${num}`);\nreturn [{ json: { wheel_id: wheel, number: num, timestamp: ts } }];"
+      },
+      "id": "validate",
+      "name": "2. Valida giro",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 200]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "roulette_spins",
+        "columns": "wheel_id,number,timestamp"
+      },
+      "id": "save-supabase",
+      "name": "3. Persiste no Supabase",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [680, 200],
+      "_comment": "CREATE TABLE roulette_spins ( id BIGSERIAL PRIMARY KEY, wheel_id TEXT NOT NULL, number TEXT NOT NULL, timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW() );"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "hours", "hoursInterval": 6 }]
+        }
+      },
+      "id": "cron-analysis",
+      "name": "4. Cron: analise a cada 6h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 480]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT number FROM roulette_spins WHERE wheel_id = $1 ORDER BY timestamp ASC",
+        "additionalFields": { "queryParams": "={{$json.wheel_id || 'default'}}" }
+      },
+      "id": "fetch-history",
+      "name": "5. Busca historico do wheel",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [460, 480]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/analyze",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "wheel", "value": "european" },
+            { "name": "spins", "value": "={{$json.spins}}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "call-analyzer",
+      "name": "6. Chama o roulette_analyzer (FastAPI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 480],
+      "_comment": "Empacote o analyze.py como FastAPI (exemplo no README). Endpoint POST /analyze recebe {wheel, spins[]} e devolve o resultado do detect_bias."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true },
+          "conditions": [
+            {
+              "leftValue": "={{$json.verdict}}",
+              "rightValue": "vies_provavel",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ]
+        }
+      },
+      "id": "if-bias",
+      "name": "7. SE vies provavel",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 480]
+    },
+    {
+      "parameters": {
+        "channel": "#roleta-alerts",
+        "text": "=ALERTA: viés detectado em {{$json.wheel}}\\nGiros analisados: {{$json.n_spins}}\\nFlags: {{$json.flags.length}}\\nResumo: {{$json.honest_summary}}"
+      },
+      "id": "slack-alert",
+      "name": "8a. Alerta Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1120, 380]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "roulette_bias_alerts",
+        "columns": "wheel_id,verdict,n_spins,flags_json,summary,detected_at"
+      },
+      "id": "log-alert",
+      "name": "8b. Log do alerta",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1120, 580]
+    }
+  ],
+  "connections": {
+    "1. Webhook: novo giro": { "main": [[{ "node": "2. Valida giro", "type": "main", "index": 0 }]] },
+    "2. Valida giro": { "main": [[{ "node": "3. Persiste no Supabase", "type": "main", "index": 0 }]] },
+    "4. Cron: analise a cada 6h": { "main": [[{ "node": "5. Busca historico do wheel", "type": "main", "index": 0 }]] },
+    "5. Busca historico do wheel": { "main": [[{ "node": "6. Chama o roulette_analyzer (FastAPI)", "type": "main", "index": 0 }]] },
+    "6. Chama o roulette_analyzer (FastAPI)": { "main": [[{ "node": "7. SE vies provavel", "type": "main", "index": 0 }]] },
+    "7. SE vies provavel": {
+      "main": [
+        [{ "node": "8a. Alerta Slack", "type": "main", "index": 0 }, { "node": "8b. Log do alerta", "type": "main", "index": 0 }],
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" }
+}

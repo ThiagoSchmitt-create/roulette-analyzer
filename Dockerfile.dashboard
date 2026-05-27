@@ -1,0 +1,16 @@
+# Dashboard Streamlit do roulette_analyzer. Deploy como app no Easypanel (porta 8501).
+# Le a API via env API_BASE_URL (ex.: http://roulette-api:8000 ou a URL publica da API).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml README.md ./
+COPY core ./core
+COPY analyze.py api.py dashboard.py ./
+COPY examples ./examples
+RUN pip install --no-cache-dir ".[dashboard]"
+
+EXPOSE 8501
+CMD ["streamlit", "run", "dashboard.py", \
+     "--server.port=8501", "--server.address=0.0.0.0", \
+     "--server.headless=true", "--browser.gatherUsageStats=false"]
