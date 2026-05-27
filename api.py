@@ -49,6 +49,15 @@ class AnalyzeIn(BaseModel):
     run_simulation: bool = True
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "roulette-analyzer",
+        "status": "ok",
+        "endpoints": ["/health", "/spin", "/analyze", "/report/{wheel_id}", "/history/{wheel_id}"],
+    }
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "wheels_tracked": len(_history)}
