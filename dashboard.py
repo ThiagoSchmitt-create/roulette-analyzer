@@ -39,6 +39,13 @@ from core.bias import detect_bias
 from core.ev import evaluate_all_numbers, house_edge
 from core.patterns import frequency_ranking, prob_not_appearing
 from core.predictability_engine import analyze_predictability, rolling_structure
+from core.transitions import (
+    cond_prob_next,
+    predecessors,
+    successors,
+    transition_counts,
+    transition_summary,
+)
 from core.wheel import Wheel, color_of, get_wheel
 
 EXAMPLES_DIR = Path(__file__).parent / "examples"
@@ -215,6 +222,12 @@ def analyze_cached(spins_tuple: tuple, wheel_name: str) -> dict:
 def predictability_cached(spins_tuple: tuple, wheel_name: str, n_perm: int = 150) -> dict:
     """analyze_predictability com cache (testes de permutacao sao custosos)."""
     return analyze_predictability(list(spins_tuple), get_wheel(wheel_name), seed=42, n_perm=n_perm)
+
+
+@st.cache_data(show_spinner=False)
+def transition_cached(spins_tuple: tuple, wheel_name: str, n_perm: int = 150) -> dict:
+    """transition_summary com cache (veredito de dependencia serial via permutacao)."""
+    return transition_summary(list(spins_tuple), get_wheel(wheel_name), seed=42, n_perm=n_perm)
 
 
 def load_from_api(base_url: str, wheel_id: str, limit: int) -> list[str]:
@@ -477,6 +490,49 @@ def main() -> None:
             )
     else:
         st.caption("Forneca >= 1500 giros para a visao dinamica em janela deslizante.")
+
+    # ---- Matriz de transicao (antecessores / sucessores) ----
+    st.divider()
+    st.subheader("Matriz de transicao (antecessores / sucessores)")
+    st.caption(
+        "Para cada numero, o que vem ANTES e DEPOIS, com P(proximo|atual). Em roda justa "
+        "a matriz fica 'plana' (~1/N) e o anterior NAO informa o proximo. So acende com "
+        "dependencia serial real. (Vies marginal nao e dependencia serial.)"
+    )
+    tsum = transition_cached(tuple(spins), wheel_name)
+    if tsum["has_serial_structure"]:
+        st.warning(tsum["verdict"])
+    else:
+        st.success(tsum["verdict"])
+
+    tm = transition_counts(spins, wheel)
+    pnext = cond_prob_next(tm)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(pnext, cmap="magma", vmin=0.0, vmax=max(0.15, float(pnext.max())))
+    ax.set_xticks(range(wheel.pockets))
+    ax.set_xticklabels(wheel.order, fontsize=5, rotation=90)
+    ax.set_yticks(range(wheel.pockets))
+    ax.set_yticklabels(wheel.order, fontsize=5)
+    ax.set_xlabel("proximo numero")
+    ax.set_ylabel("numero atual")
+    ax.set_title("P(proximo | atual)  -  plano = aleatorio")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    sel = st.selectbox("Antecessores/sucessores de:", wheel.order)
+    tcol1, tcol2 = st.columns(2)
+    with tcol1:
+        st.markdown(f"**Sucessores de {sel}** (o que vem DEPOIS)")
+        suc = successors(spins, wheel, sel, k=6, m=tm)
+        st.caption(f"n depois = {suc['n_depois']} | uniforme = {suc['p_uniforme']}")
+        st.dataframe(pd.DataFrame(suc["top"]), use_container_width=True, hide_index=True)
+    with tcol2:
+        st.markdown(f"**Antecessores de {sel}** (o que vem ANTES)")
+        pre = predecessors(spins, wheel, sel, k=6, m=tm)
+        st.caption(f"n antes = {pre['n_antes']} | uniforme = {pre['p_uniforme']}")
+        st.dataframe(pd.DataFrame(pre["top"]), use_container_width=True, hide_index=True)
 
     with st.expander("Como interpretar (regra da casa)"):
         st.markdown(
